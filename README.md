@@ -1,1 +1,2 @@
-What if minecraft was made with modern technology?
+GPU level ray march renderer for signed distance fields.
+Seems to be too slow for complex application. 

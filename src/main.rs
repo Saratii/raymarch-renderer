@@ -1,4 +1,6 @@
 pub mod camera;
+pub mod pickaxe;
+pub mod sdf;
 
 use std::collections::HashMap;
 
@@ -6,15 +8,20 @@ use bevy::{
     prelude::*,
     reflect::TypePath,
     render::{
-        render_resource::{AsBindGroup, ShaderRef, ShaderType},
+        render_resource::{AsBindGroup, ShaderRef},
         storage::ShaderStorageBuffer,
     },
     window::{PresentMode, WindowResolution},
 };
+use iyes_perf_ui::{prelude::PerfUiDefaultEntries, PerfUiPlugin};
 
-use crate::camera::{
-    cursor_grab, get_buffer_data, initial_grab_cursor, player_look, player_move, FlyCam,
-    KeyBindings, MovementSettings,
+use crate::{
+    camera::{
+        cursor_grab, get_buffer_data, initial_grab_cursor, player_look, player_move, FlyCam,
+        KeyBindings, MovementSettings,
+    },
+    pickaxe::pickaxe_listener,
+    sdf::{BoxSDF, SphereSDF},
 };
 
 const CHUNK_LOAD_SQUARE_RADIUS: i32 = 3;
@@ -22,13 +29,17 @@ const SHADER_ASSET_PATH: &str = "shaders/custom_material.wgsl";
 pub const CHUNK_SIZE: f32 = 64.0;
 
 #[derive(Resource)]
-pub struct ChunkBufferHandle(pub Handle<ShaderStorageBuffer>);
+pub struct ChunkBoxBufferHandle(pub Handle<ShaderStorageBuffer>);
+
+#[derive(Resource)]
+pub struct ChunkSphereBufferHandle(pub Handle<ShaderStorageBuffer>);
 
 #[derive(Resource)]
 pub struct ChunkMap(HashMap<(i32, i32), Chunk>);
 
 pub struct Chunk {
     pub box_sdfs: Vec<BoxSDF>,
+    pub sphere_sdfs: Vec<SphereSDF>,
 }
 
 fn main() {
@@ -43,11 +54,16 @@ fn main() {
                 ..default()
             }),
             MaterialPlugin::<CustomMaterial>::default(),
+            PerfUiPlugin,
+            bevy::diagnostic::FrameTimeDiagnosticsPlugin::default(),
         ))
         .insert_resource(MovementSettings::default())
         .insert_resource(KeyBindings::default())
         .add_systems(Startup, (setup, initial_grab_cursor))
-        .add_systems(Update, (player_look, cursor_grab, player_move))
+        .add_systems(
+            Update,
+            (player_look, cursor_grab, player_move, pickaxe_listener),
+        )
         .run();
 }
 
@@ -58,19 +74,21 @@ fn setup(
     window: Single<&Window>,
     mut buffers: ResMut<Assets<ShaderStorageBuffer>>,
 ) {
+    commands.spawn(PerfUiDefaultEntries::default());
     let mut chunk_map = build_world();
-    let chunk_buffer_handle = buffers.add(ShaderStorageBuffer::from(get_buffer_data(
-        (0, 0),
-        &mut chunk_map,
-    )));
+    let (box_sdfs, sphere_sdfs) = get_buffer_data((0, 0), &mut chunk_map);
+    let box_buffer_handle = buffers.add(ShaderStorageBuffer::from(box_sdfs));
+    let sphere_buffer_handle = buffers.add(ShaderStorageBuffer::from(sphere_sdfs));
     let material_handle = materials.add(CustomMaterial {
         pos: Vec3::new(0.0, 0.0, 0.0),
         forward: Vec3::new(0.0, 0.0, -1.0),
         right: Vec3::new(1.0, 0.0, 0.0),
         up: Vec3::new(0.0, 1.0, 0.0),
-        box_sdf_buffer: chunk_buffer_handle.clone(),
+        box_sdf_buffer: box_buffer_handle.clone(),
+        sphere_sdf_buffer: sphere_buffer_handle.clone(),
     });
-    commands.insert_resource(ChunkBufferHandle(chunk_buffer_handle));
+    commands.insert_resource(ChunkBoxBufferHandle(box_buffer_handle));
+    commands.insert_resource(ChunkSphereBufferHandle(sphere_buffer_handle));
     commands.insert_resource(ChunkMap(chunk_map));
     commands
         .spawn((
@@ -106,6 +124,8 @@ pub struct CustomMaterial {
     up: Vec3,
     #[storage(4, read_only)]
     box_sdf_buffer: Handle<ShaderStorageBuffer>,
+    #[storage(5, read_only)]
+    sphere_sdf_buffer: Handle<ShaderStorageBuffer>,
 }
 
 impl Material for CustomMaterial {
@@ -120,17 +140,6 @@ pub struct MaterialHandle(Handle<CustomMaterial>);
 #[derive(Component)]
 pub struct ViewPort;
 
-#[derive(ShaderType, Clone)]
-pub struct BoxSDF {
-    pub center: Vec3,
-    pub half_extents: Vec3,
-}
-
-pub struct SphereSDF {
-    pub center: Vec3,
-    pub radius: f32,
-}
-
 fn build_world() -> HashMap<(i32, i32), Chunk> {
     let mut chunk_map = HashMap::new();
     for i in -CHUNK_LOAD_SQUARE_RADIUS..=CHUNK_LOAD_SQUARE_RADIUS {
@@ -144,6 +153,7 @@ fn build_world() -> HashMap<(i32, i32), Chunk> {
                         center: Vec3::new(i as f32 * CHUNK_SIZE, -20.0, j as f32 * CHUNK_SIZE),
                         half_extents: Vec3::new(CHUNK_SIZE / 2., 20.0, CHUNK_SIZE / 2.),
                     }],
+                    sphere_sdfs: Vec::new(),
                 },
             );
         }

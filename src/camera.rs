@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use crate::{
-    BoxSDF, Chunk, ChunkBufferHandle, ChunkMap, CustomMaterial, MaterialHandle,
-    CHUNK_LOAD_SQUARE_RADIUS, CHUNK_SIZE,
+    sdf::SphereSDF, BoxSDF, Chunk, ChunkBoxBufferHandle, ChunkMap, ChunkSphereBufferHandle,
+    CustomMaterial, MaterialHandle, CHUNK_LOAD_SQUARE_RADIUS, CHUNK_SIZE,
 };
 use bevy::{
     input::mouse::MouseMotion,
@@ -83,7 +83,8 @@ pub fn player_move(
     material_handle: Res<MaterialHandle>,
     mut chunk_map: ResMut<ChunkMap>,
     mut buffers: ResMut<Assets<ShaderStorageBuffer>>,
-    chunk_buffer_handle: Res<ChunkBufferHandle>,
+    chunk_box_buffer_handle: Res<ChunkBoxBufferHandle>,
+    chunk_sphere_buffer_handle: Res<ChunkSphereBufferHandle>,
 ) {
     if let Ok(window) = primary_window.single() {
         for (_camera, mut transform) in query.iter_mut() {
@@ -126,11 +127,11 @@ pub fn player_move(
                 (transform.translation.z / CHUNK_SIZE).round() as i32,
             );
             if old_chunk != new_chunk {
-                let chunk_buffer_data = buffers.get_mut(&chunk_buffer_handle.0).unwrap();
-                chunk_buffer_data.set_data(get_buffer_data(
-                    (new_chunk.0, new_chunk.1),
-                    &mut chunk_map.0,
-                ));
+                let (box_sdfs, sphere_sdfs) = get_buffer_data(new_chunk, &mut chunk_map.0);
+                let chunk_buffer_data = buffers.get_mut(&chunk_box_buffer_handle.0).unwrap();
+                chunk_buffer_data.set_data(box_sdfs);
+                let sphere_buffer_data = buffers.get_mut(&chunk_sphere_buffer_handle.0).unwrap();
+                sphere_buffer_data.set_data(sphere_sdfs);
             }
         }
     }
@@ -185,8 +186,9 @@ fn toggle_grab_cursor(window: &mut Window) {
 pub fn get_buffer_data(
     current_camera_chunk: (i32, i32),
     chunk_map: &mut HashMap<(i32, i32), Chunk>,
-) -> Vec<BoxSDF> {
-    let mut new_buffer_data = Vec::new();
+) -> (Vec<BoxSDF>, Vec<SphereSDF>) {
+    let mut box_sdfs = Vec::new();
+    let mut sphere_sdfs = Vec::new();
     let mut new_chunks = Vec::new();
     for i in -CHUNK_LOAD_SQUARE_RADIUS..=CHUNK_LOAD_SQUARE_RADIUS {
         for j in -CHUNK_LOAD_SQUARE_RADIUS..=CHUNK_LOAD_SQUARE_RADIUS {
@@ -194,7 +196,8 @@ pub fn get_buffer_data(
             let chunk_z = current_camera_chunk.1 + j;
             match chunk_map.get(&(chunk_x, chunk_z)) {
                 Some(chunk) => {
-                    new_buffer_data.extend(chunk.box_sdfs.clone());
+                    box_sdfs.extend(chunk.box_sdfs.clone());
+                    sphere_sdfs.extend(chunk.sphere_sdfs.clone());
                 }
                 None => {
                     let new_chunk = Chunk {
@@ -206,6 +209,7 @@ pub fn get_buffer_data(
                             ),
                             half_extents: Vec3::new(CHUNK_SIZE / 2., 20.0, CHUNK_SIZE / 2.),
                         }],
+                        sphere_sdfs: Vec::new(),
                     };
                     new_chunks.push(((chunk_x, chunk_z), new_chunk));
                 }
@@ -213,9 +217,9 @@ pub fn get_buffer_data(
         }
     }
     for (chunk_coords, chunk) in new_chunks {
-        let box_sdfs = chunk.box_sdfs.clone();
+        let new_box_sdf = chunk.box_sdfs.clone();
         chunk_map.insert(chunk_coords, chunk);
-        new_buffer_data.extend(box_sdfs);
+        box_sdfs.extend(new_box_sdf);
     }
-    new_buffer_data
+    (box_sdfs, sphere_sdfs)
 }
