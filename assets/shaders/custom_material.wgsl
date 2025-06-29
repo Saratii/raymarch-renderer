@@ -19,99 +19,69 @@ struct BoxSDF {
 struct SphereSDF {
     center: vec3<f32>,
     radius: f32,
-    negate: i32, // 1 for negate (subtract), 0 for normal (add/union)
-}
-
-struct SceneHit {
-    dist: f32,
-    // 0 = Background
-    // 1 = Green material (for boxes)
-    // 2 = Brown material (for spheres)
-    material_id: i32,
+    negate: i32 //1 for negate, 0 for normal
 }
 
 fn sdf_box(p: vec3<f32>, center: vec3<f32>, b: vec3<f32>) -> f32 {
-    let q = abs(p - center) - b;
-    return length(max(q, vec3<f32>(0.0))) + min(max(q.x, max(q.y, q.z)), 0.0);
+  let q = abs(p - center) - b; 
+  return length(max(q, vec3<f32>(0.0))) + min(max(q.x, max(q.y, q.z)), 0.0);
 }
 
 fn sdf_sphere(p: vec3<f32>, center: vec3<f32>, radius: f32) -> f32 {
     return length(p - center) - radius;
 }
 
-fn map_scene(p: vec3<f32>) -> SceneHit {
-    var closest_hit = SceneHit(1e9, 0); 
-    for (var i: u32 = 0u; i < arrayLength(&box_sdfs); i++) {
-        let dist = sdf_box(p, box_sdfs[i].center, box_sdfs[i].half_extents);
-        if (dist < closest_hit.dist) {
-            closest_hit.dist = dist;
-            closest_hit.material_id = 1;
-        }
+fn scene_sdf(p: vec3<f32>) -> f32 {
+    var min_dist = sdf_box(p, box_sdfs[0].center, box_sdfs[0].half_extents);
+    for (var i: u32 = 1u; i < arrayLength(&box_sdfs); i++) {
+        min_dist = min(min_dist, sdf_box(p, box_sdfs[i].center, box_sdfs[i].half_extents));
     }
     for (var i: u32 = 0u; i < arrayLength(&sphere_sdfs); i++) {
-        let sphere_dist = sdf_sphere(p, sphere_sdfs[i].center, sphere_sdfs[i].radius);
-        if (sphere_sdfs[i].negate == 1) {
-            closest_hit.dist = max(-sphere_dist, closest_hit.dist);
+        if sphere_sdfs[i].negate == 1 {
+            min_dist = max(min_dist, -sdf_sphere(p, sphere_sdfs[i].center, sphere_sdfs[i].radius));
         } else {
-            if (sphere_dist < closest_hit.dist) {
-                closest_hit.dist = sphere_dist;
-                closest_hit.material_id = 2;
-            }
+            min_dist = min(min_dist, sdf_sphere(p, sphere_sdfs[i].center, sphere_sdfs[i].radius));
         }
     }
-
-    return closest_hit;
+    return min_dist;
 }
-
-fn calculate_normal(p: vec3<f32>) -> vec3<f32> {
-    let h = 0.001;
-    let k = vec2<f32>(1.0, -1.0);
-    return normalize(
-        k.xyy * map_scene(p + k.xyy * h).dist +
-        k.yyx * map_scene(p + k.yyx * h).dist +
-        k.yxy * map_scene(p + k.yxy * h).dist +
-        k.xxx * map_scene(p + k.xxx * h).dist
-    );
-}
-
 
 @fragment
 fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     let uv = mesh.uv * 2.0 - 1.0;
     let resolution = view.viewport.zw;
-    let aspect = resolution.x / resolution.y;
+    let aspect = resolution.x / resolution.y;    
     let corrected_uv = vec2<f32>(uv.x * aspect, uv.y);
     let ray_origin = position;
     let fov_scale = tan(radians(30.0));
     let ray_dir = normalize(
-        forward +
-        corrected_uv.x * right * fov_scale +
+        forward + 
+        corrected_uv.x * right * fov_scale + 
         -corrected_uv.y * up * fov_scale
     );
     var ray_pos = ray_origin;
-    var total_dist_traveled = 0.0;
-    let max_steps = 128; 
+    let max_steps = 256;
     let max_dist = 500.0;
-    let epsilon = 0.001;
-
+    let epsilon = 0.01;
     for (var i = 0; i < max_steps; i++) {
-        let hit = map_scene(ray_pos);
-        if (hit.dist < epsilon) {
-            let normal = calculate_normal(ray_pos);
+        let dist = scene_sdf(ray_pos);
+        if (dist < epsilon) {
+            let h = 0.001;
+            let normal = normalize(vec3<f32>(
+                scene_sdf(ray_pos + vec3<f32>(h, 0.0, 0.0)) - scene_sdf(ray_pos - vec3<f32>(h, 0.0, 0.0)),
+                scene_sdf(ray_pos + vec3<f32>(0.0, h, 0.0)) - scene_sdf(ray_pos - vec3<f32>(0.0, h, 0.0)),
+                scene_sdf(ray_pos + vec3<f32>(0.0, 0.0, h)) - scene_sdf(ray_pos - vec3<f32>(0.0, 0.0, h))
+            ));
             let light_dir = normalize(vec3<f32>(1.0, 1.0, 1.0));
-            
             let diffuse = max(0.2, dot(normal, light_dir));
-            if (hit.material_id == 1) {
-                return vec4<f32>(17.0/255.0 * diffuse, 124.0/255.0 * diffuse, 19.0/255.0 * diffuse, 1.0);
-            } else if (hit.material_id == 2) {
-                 return vec4<f32>(139.0/255.0 * diffuse, 69.0/255.0 * diffuse, 19.0/255.0 * diffuse, 1.0);
+            if (ray_pos.y < -2.0) {
+                return vec4<f32>(139.0/255.0 * diffuse, 69.0/255.0 * diffuse, 19.0/255.0 * diffuse, 1.0);
             } else {
-                 return vec4<f32>(0.1 * diffuse, 0.1 * diffuse, 0.1 * diffuse, 1.0);
+                return vec4<f32>(17.0/255 * diffuse, 124.0/255 * diffuse, 19.0/255 * diffuse, 1.0);
             }
         }
-        ray_pos += ray_dir * hit.dist;
-        total_dist_traveled += hit.dist;
-        if (total_dist_traveled > max_dist) {
+        ray_pos += ray_dir * dist;
+        if (length(ray_pos - ray_origin) > max_dist) {
             break;
         }
     }
